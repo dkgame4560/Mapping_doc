@@ -1,1 +1,0 @@
-window.TRANSLATION_API_BASE_URL = '';
