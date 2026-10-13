@@ -5,7 +5,39 @@ const loadingPanel = document.querySelector('#loading-panel');
 const uploadIds = ['source-template', 'target-template', 'source-document'];
 const maxFileSize = 50 * 1024 * 1024;
 const apiBaseUrl = (window.TRANSLATION_API_BASE_URL || '').replace(/\/+$/, '');
-const translationApiUrl = apiBaseUrl ? `${apiBaseUrl}/api/translate` : '/api/translate';
+
+function apiUrl(path) {
+  return `${apiBaseUrl}${path}`;
+}
+
+async function apiRequest(path, options = {}) {
+  const headers = new Headers(options.headers);
+  if (apiBaseUrl) headers.set('ngrok-skip-browser-warning', 'true');
+  const response = await fetch(apiUrl(path), { ...options, headers });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || `Máy chủ trả về lỗi HTTP ${response.status}.`);
+  }
+  return response;
+}
+
+async function waitForTranslation(jobId, loadingDetail) {
+  while (true) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const response = await apiRequest(`/api/translate/${jobId}`);
+    const job = await response.json();
+    if (job.status === 'completed') return;
+    if (job.status === 'failed') throw new Error(job.error || 'Không xử lý được tài liệu.');
+    loadingDetail.textContent = job.status === 'queued'
+      ? 'Tài liệu đang chờ máy chủ xử lý.'
+      : 'Máy chủ đang xử lý tài liệu; bạn có thể giữ trang mở để tự tải kết quả.';
+  }
+}
+
+async function downloadTranslation(jobId) {
+  const response = await apiRequest(`/api/translate/${jobId}/result`);
+  return response.blob();
+}
 
 function setStatus(message, state) {
   statusMessage.textContent = message;
@@ -91,31 +123,11 @@ form.addEventListener('submit', async (event) => {
   setStatus(loadingDetail.textContent, 'loading');
 
   try {
-    const translatedFile = await new Promise((resolve, reject) => {
-      const request = new XMLHttpRequest();
-      request.open('POST', translationApiUrl);
-      if (apiBaseUrl) {
-        request.setRequestHeader('ngrok-skip-browser-warning', 'true');
-      }
-      request.responseType = 'blob';
-      request.onload = async () => {
-        if (request.status < 200 || request.status >= 300) {
-          let message = 'Không xử lý được tài liệu.';
-          try {
-            const errorPayload = JSON.parse(await request.response.text());
-            message = errorPayload.detail || message;
-          } catch {
-            // Keep the generic error when the server did not return JSON.
-          }
-          reject(new Error(message));
-          return;
-        }
-        resolve(request.response);
-      };
-      request.onerror = () => reject(new Error('Không thể kết nối tới máy chủ xử lý.'));
-      request.onabort = () => reject(new Error('Yêu cầu xử lý đã bị hủy.'));
-      request.send(payload);
-    });
+    const response = await apiRequest('/api/translate', { method: 'POST', body: payload });
+    const job = await response.json();
+    setStatus('Tài liệu đã tải lên; máy chủ đang xử lý.', 'loading');
+    await waitForTranslation(job.jobId, loadingDetail);
+    const translatedFile = await downloadTranslation(job.jobId);
     const sourceName = sourceDocument.files[0].name.replace(/\.docx$/i, '');
     const downloadName = `${sourceName}_translated.docx`;
     const objectUrl = URL.createObjectURL(translatedFile);
