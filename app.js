@@ -36,7 +36,13 @@ async function waitForTranslation(jobId, loadingDetail) {
 
 async function downloadTranslation(jobId) {
   const response = await apiRequest(`/api/translate/${jobId}/result`);
-  return response.blob();
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/vnd.openxmlformats-officedocument.wordprocessingml.document')) {
+    throw new Error('Máy chủ không trả về tệp DOCX hợp lệ.');
+  }
+  const file = await response.blob();
+  if (file.size === 0) throw new Error('Tệp DOCX kết quả bị rỗng.');
+  return file;
 }
 
 function setStatus(message, state) {
@@ -89,7 +95,7 @@ form.addEventListener('submit', async (event) => {
     return;
   }
   if (Boolean(sourceTemplate.files?.length) !== Boolean(targetTemplate.files?.length)) {
-    setStatus('Hãy tải cả Template Structure và Template language, hoặc bỏ trống cả hai để dùng mapping JSON đã lưu.', 'error');
+    setStatus('Hãy tải cả Template 1 và Template 2, hoặc bỏ trống cả hai để dùng mapping JSON đã lưu.', 'error');
     return;
   }
 
