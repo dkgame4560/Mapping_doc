@@ -2,9 +2,11 @@ const form = document.querySelector('#upload-form');
 const submitButton = document.querySelector('#submit-button');
 const statusMessage = document.querySelector('#status-message');
 const loadingPanel = document.querySelector('#loading-panel');
+const templateTextDownload = document.querySelector('#template-text-download');
 const uploadIds = ['source-template', 'target-template', 'source-document'];
 const maxFileSize = 50 * 1024 * 1024;
 const apiBaseUrl = (window.TRANSLATION_API_BASE_URL || '').replace(/\/+$/, '');
+let templateTextObjectUrl;
 
 function apiUrl(path) {
   return `${apiBaseUrl}${path}`;
@@ -26,8 +28,7 @@ async function waitForTranslation(jobId, loadingDetail) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
     const response = await apiRequest(`/api/translate/${jobId}`);
     const job = await response.json();
-    if (job.status === 'completed') return;
-    if (job.status === 'failed') throw new Error(job.error || 'Không xử lý được tài liệu.');
+    if (job.status === 'completed' || job.status === 'failed') return job;
     loadingDetail.textContent = job.status === 'queued'
       ? 'Tài liệu đang chờ máy chủ xử lý.'
       : 'Máy chủ đang xử lý tài liệu; bạn có thể giữ trang mở để tự tải kết quả.';
@@ -43,6 +44,24 @@ async function downloadTranslation(jobId) {
   const file = await response.blob();
   if (file.size === 0) throw new Error('Tệp DOCX kết quả bị rỗng.');
   return file;
+}
+
+async function prepareTemplateTextDownload(jobId) {
+  const response = await apiRequest(`/api/translate/${jobId}/template-text`);
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('text/plain')) {
+    throw new Error('Máy chủ không trả về file text debug hợp lệ.');
+  }
+  const file = await response.blob();
+  if (file.size === 0) throw new Error('File text debug bị rỗng.');
+  return file;
+}
+
+async function showTemplateTextDownload(jobId) {
+  const templateTextFile = await prepareTemplateTextDownload(jobId);
+  templateTextObjectUrl = URL.createObjectURL(templateTextFile);
+  templateTextDownload.href = templateTextObjectUrl;
+  templateTextDownload.hidden = false;
 }
 
 function setStatus(message, state) {
@@ -118,6 +137,12 @@ form.addEventListener('submit', async (event) => {
   }
   payload.append('source_document', sourceDocument.files[0]);
   payload.append('debug_mode', document.getElementById('debug-mode').checked ? 'true' : 'false');
+  templateTextDownload.hidden = true;
+  templateTextDownload.removeAttribute('href');
+  if (templateTextObjectUrl) {
+    URL.revokeObjectURL(templateTextObjectUrl);
+    templateTextObjectUrl = undefined;
+  }
   submitButton.disabled = true;
   submitButton.querySelector('span:first-child').textContent = 'Đang xử lý...';
   loadingPanel.hidden = false;
@@ -132,7 +157,20 @@ form.addEventListener('submit', async (event) => {
     const response = await apiRequest('/api/translate', { method: 'POST', body: payload });
     const job = await response.json();
     setStatus('Tài liệu đã tải lên; máy chủ đang xử lý.', 'loading');
-    await waitForTranslation(job.jobId, loadingDetail);
+    const completedJob = await waitForTranslation(job.jobId, loadingDetail);
+    if (completedJob.status === 'failed') {
+      if (usesTemplates) {
+        try {
+          await showTemplateTextDownload(job.jobId);
+        } catch (error) {
+          throw new Error(
+            `${completedJob.error || 'Không xử lý được tài liệu.'} ` +
+            `Không tải được file text debug: ${error.message}`);
+        }
+      }
+      throw new Error(completedJob.error || 'Không xử lý được tài liệu.');
+    }
+
     const translatedFile = await downloadTranslation(job.jobId);
     const sourceName = sourceDocument.files[0].name.replace(/\.docx$/i, '');
     const downloadName = `${sourceName}_translated.docx`;
@@ -144,7 +182,14 @@ form.addEventListener('submit', async (event) => {
     downloadLink.click();
     downloadLink.remove();
     URL.revokeObjectURL(objectUrl);
-    setStatus(`Đã tạo xong ${downloadName}. Tệp đã được tải xuống.`, 'success');
+    if (usesTemplates) {
+      await showTemplateTextDownload(job.jobId);
+      setStatus(
+        `Đã tạo xong ${downloadName}. Tệp DOCX đã được tải xuống; file text debug có thể tải bằng liên kết bên dưới.`,
+        'success');
+    } else {
+      setStatus(`Đã tạo xong ${downloadName}. Tệp đã được tải xuống.`, 'success');
+    }
   } catch (error) {
     setStatus(error.message || 'Có lỗi khi xử lý tài liệu.', 'error');
   } finally {
